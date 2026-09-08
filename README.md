@@ -1,5 +1,7 @@
 # discordx
 
+Discord c2 for Mythic C2, but with encryptable transport envelopes, and pluggable encoding. 
+
 ## Fixed transport envelopes
 
 One running Discord profile and channel use one fixed envelope format,
