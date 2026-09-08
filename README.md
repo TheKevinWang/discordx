@@ -1,6 +1,6 @@
 # discordx
 
-Discord c2 for Mythic C2, but with encryptable transport envelopes, and pluggable encoding. 
+Discord c2 for Mythic C2, but with encryptable transport envelopes and pluggable encoding. 
 
 ## Fixed transport envelopes
 
