@@ -1,0 +1,9 @@
+{
+  "botToken": "",
+  "channelID": "",
+  "transportEnvelopeFormat": "json-v1",
+  "transportPresentation": "plain",
+  "transportProtection": "none",
+  "transportKeyMode": "single",
+  "useBase64": "true"
+}

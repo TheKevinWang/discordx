@@ -1,0 +1,48 @@
+{
+  "fixture_revision": 1,
+  "description": "Synthetic markerless Discord dual-envelope fixtures; Base64 is only the JSON representation of fixture bytes.",
+  "request_route": "00000000-0000-0000-0000-000000000000",
+  "response_route": "11111111-1111-1111-1111-111111111111",
+  "vectors": [
+    {
+      "name": "json-v1-raw-request",
+      "format": "json-v1",
+      "direction": "agent-to-server",
+      "use_base64": false,
+      "body_base64": "MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAweyJhY3Rpb24iOiJjaGVja2luIiwibm90ZSI6InNub3dtYW4g4piDLCBxdW90ZSBcIiBzbGFzaCBcXCBsaW5lIFxuIn0=",
+      "envelope_base64": "eyJtZXNzYWdlIjoiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwe1wiYWN0aW9uXCI6XCJjaGVja2luXCIsXCJub3RlXCI6XCJzbm93bWFuIOKYgywgcXVvdGUgXFxcIiBzbGFzaCBcXFxcIGxpbmUgXFxuXCJ9Iiwic2VuZGVyX2lkIjoiMDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwIiwidG9fc2VydmVyIjp0cnVlLCJtZXNzYWdlX2Zvcm1hdCI6InJhdy12MSIsImlkIjoxLCJmaW5hbCI6dHJ1ZX0="
+    },
+    {
+      "name": "binary-v1-raw-request-arbitrary-bytes",
+      "format": "binary-v1",
+      "direction": "agent-to-server",
+      "use_base64": false,
+      "body_base64": "MDAwMDAwMDAtMDAwMC0wMDAwLTAwMDAtMDAwMDAwMDAwMDAwAP+AQQ==",
+      "envelope_base64": "AzAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMDAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMAD/gEE="
+    },
+    {
+      "name": "binary-v1-raw-response",
+      "format": "binary-v1",
+      "direction": "server-to-agent",
+      "use_base64": false,
+      "body_base64": "MTExMTExMTEtMTExMS0xMTExLTExMTEtMTExMTExMTExMTExeyJ0YXNrcyI6W119",
+      "envelope_base64": "AjExMTExMTExLTExMTEtMTExMS0xMTExLTExMTExMTExMTExMTExMTExMTExLTExMTEtMTExMS0xMTExLTExMTExMTExMTExMXsidGFza3MiOltdfQ=="
+    },
+    {
+      "name": "binary-v1-legacy-request",
+      "format": "binary-v1",
+      "direction": "agent-to-server",
+      "use_base64": true,
+      "body_base64": "TURBd01EQXdNREF0TURBd01DMHdNREF3TFRBd01EQXRNREF3TURBd01EQXdNREF3ZXlKaFkzUnBiMjRpT2lKblpYUmZkR0Z6YTJsdVp5Sjk=",
+      "envelope_base64": "ATAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwME1EQXdNREF3TURBdE1EQXdNQzB3TURBd0xUQXdNREF0TURBd01EQXdNREF3TURBd2V5SmhZM1JwYjI0aU9pSm5aWFJmZEdGemEybHVaeUo5"
+    }
+  ],
+  "malformed": {
+    "binary_reserved_flags_base64": "gzAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMDAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMAD/gEE=",
+    "binary_short_base64": "Aw==",
+    "json_redundant_metadata": "{\"message\":\"x\",\"sender_id\":\"00000000-0000-0000-0000-000000000000\",\"to_server\":true,\"envelope_version\":1}"
+  },
+  "primitive_presentations": ["base64", "decimal", "emoji"],
+  "primitive_protections": ["none", "xor-obfuscation-v1", "chacha20-v1", "aes256-hmac-v1"]
+}
+
