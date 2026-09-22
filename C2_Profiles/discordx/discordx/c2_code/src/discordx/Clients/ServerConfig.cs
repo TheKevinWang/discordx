@@ -20,6 +20,13 @@ namespace discordx.Clients
 #endif
             BotToken = Required(configValues, "botToken");
             ChannelID = Required(configValues, "channelID");
+            SocksChannelID = Value(configValues, "socksChannelID", String.Empty);
+            ProviderApiOrigin = DiscordProviderEndpoints.NormalizeApiOrigin(
+                Value(configValues, "providerApiOrigin", "https://discord.com"));
+            ProviderGatewayOrigin = DiscordProviderEndpoints.NormalizeGatewayOrigin(
+                Value(configValues, "providerGatewayOrigin", String.Empty));
+            ProviderCdnOrigin = DiscordProviderEndpoints.NormalizeCdnOrigin(
+                Value(configValues, "providerCdnOrigin", "https://cdn.discordapp.com"));
             WireProtocol = Value(configValues, "wireProtocol", "fixed");
             TransportEnvelopeFormat = Required(configValues, "transportEnvelopeFormat");
             TransportPresentation = Required(configValues, "transportPresentation");
@@ -32,6 +39,10 @@ namespace discordx.Clients
         }
         public string BotToken { get; set; } = String.Empty;
         public string ChannelID { get; set; } = String.Empty;
+        public string SocksChannelID { get; } = String.Empty;
+        public string ProviderApiOrigin { get; } = "https://discord.com";
+        public string ProviderGatewayOrigin { get; } = String.Empty;
+        public string ProviderCdnOrigin { get; } = "https://cdn.discordapp.com";
         public string WireProtocol { get; } = "fixed";
         public string TransportEnvelopeFormat { get; } = "json-v1";
         public string TransportPresentation { get; } = "plain";
@@ -42,7 +53,9 @@ namespace discordx.Clients
         public string ConfigurationFingerprint { get; } = String.Empty;
         public bool IsValid()
         {
-            return !String.IsNullOrWhiteSpace(BotToken) && ulong.TryParse(ChannelID, out _);
+            return !String.IsNullOrWhiteSpace(BotToken) && ulong.TryParse(ChannelID, out _) &&
+                (SocksChannelID.Length == 0 ||
+                 (ulong.TryParse(SocksChannelID, out _) && SocksChannelID != ChannelID));
         }
 
         private static string Required(IReadOnlyDictionary<string, string> values, string name)
@@ -94,6 +107,11 @@ namespace discordx.Clients
 
         private void ValidateTransportConfiguration()
         {
+            if (SocksChannelID.Length != 0 &&
+                (!ulong.TryParse(SocksChannelID, out _) || SocksChannelID == ChannelID))
+            {
+                throw new InvalidOperationException("socksChannelID must be a different numeric channel ID");
+            }
             if (WireProtocol is not ("fixed" or "legacy") ||
                 TransportEnvelopeFormat is not ("json-v1" or "binary-v1") ||
                 TransportPresentation is not ("plain" or "base64" or "decimal" or "emoji") ||
@@ -112,7 +130,7 @@ namespace discordx.Clients
         private string ComputeFingerprint()
         {
             var keyDigest = SHA256.HashData(TransportKey);
-            var publicConfiguration = String.Join("\0", new[]
+            var parts = new List<string>
             {
                 ChannelID,
                 TransportEnvelopeFormat,
@@ -120,8 +138,16 @@ namespace discordx.Clients
                 TransportProtection,
                 TransportKeyMode,
                 UseBase64 ? "true" : "false",
+                ProviderApiOrigin,
+                ProviderGatewayOrigin,
+                ProviderCdnOrigin,
                 Convert.ToHexString(keyDigest),
-            });
+            };
+            if (SocksChannelID.Length != 0)
+            {
+                parts.Add(SocksChannelID);
+            }
+            var publicConfiguration = String.Join("\0", parts);
             return Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(publicConfiguration)))
                 [..16].ToLowerInvariant();
         }

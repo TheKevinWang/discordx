@@ -66,6 +66,12 @@ When it's time for you to test out your install or for another user to install y
 - Navigate to https://[ServerIP]:7443/new/payloadtypes
 - Start profile > View/Edit Config 
 - Enter your botToken And ChannelID
+- For the optional SOCKS lane, enter a second numeric channel ID in
+  `socks_channel`. It must differ from `bot_channel`. The normal channel keeps
+  tasking and responses; the SOCKS channel carries only batched proxy traffic.
+  The bot needs message history and content access there. Grant
+  `MANAGE_MESSAGES` if bulk cleanup is desired; otherwise accepted messages
+  use single-delete fallback or remain for later recovery.
 - Select `wire_protocol`:
   - `fixed` (the default) uses the configured fixed transport envelope.
   - `legacy` reproduces the original Discord JSON wrapper and is the drop-in

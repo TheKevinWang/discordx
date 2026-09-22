@@ -62,7 +62,7 @@ def _load_profile_module():
     return module, fake_base
 
 
-def test_config_check_writes_runtime_config(tmp_path):
+def test_config_check_validates_without_mutating_runtime_config(tmp_path):
     module, fake_base = _load_profile_module()
     profile = module.DiscordX()
     profile.server_folder_path = tmp_path
@@ -85,20 +85,9 @@ def test_config_check_writes_runtime_config(tmp_path):
     ))
 
     assert response.Success is True
-    assert response.RestartInternalServer is True
-    assert json.loads((tmp_path / "config.json").read_text()) == {
-        "botToken": "bot-token-value",
-        "channelID": "1234567890",
-        "wireProtocol": "fixed",
-        "transportEnvelopeFormat": "binary-v1",
-        "transportPresentation": "decimal",
-        "transportProtection": "chacha20-v1",
-        "transportKeyMode": "directional",
-        "useBase64": "false",
-        "transportKey": "AAECAwQFBgcICQoLDA0ODxAREhMUFRYXGBkaGxwdHh8=",
-    }
-    assert stat.S_IMODE((tmp_path / "config.json").stat().st_mode) == 0o600
-    assert not list(tmp_path.glob(".config.json.*.tmp"))
+    assert response.RestartInternalServer is False
+    assert "active registry unchanged" in response.Message
+    assert not (tmp_path / "config.json").exists()
 
 
 def test_config_check_rejects_invalid_channel_id(tmp_path):
@@ -153,9 +142,103 @@ def test_nuwa_third_party_stack_is_the_new_listener_default():
         "transportProtection": "chacha20-v1",
         "transportKeyMode": "directional",
         "useBase64": "false",
+        "providerApiOrigin": "https://discord.com",
+        "providerGatewayOrigin": "",
+        "providerCdnOrigin": "https://cdn.discordapp.com",
         "transportKey": transport_key,
     }
     assert runtime["useBase64"] == "false"
+
+
+def test_provider_endpoints_are_explicit_normalized_listener_parameters():
+    module, _ = _load_profile_module()
+    profile = module.DiscordX()
+    parameters = {parameter.kwargs["name"]: parameter.kwargs for parameter in profile.parameters}
+
+    assert parameters["provider_api_origin"]["default_value"] == "https://discord.com"
+    assert parameters["provider_gateway_origin"]["default_value"] == ""
+    assert parameters["provider_cdn_origin"]["default_value"] == "https://cdn.discordapp.com"
+
+    runtime = profile._runtime_config({
+        "discord_token": "bot-token-value",
+        "bot_channel": "1234567890",
+        "transport_protection": "none",
+        "provider_api_origin": "http://127.0.0.1:3301/",
+        "provider_gateway_origin": "ws://127.0.0.1:3302/",
+        "provider_cdn_origin": "http://127.0.0.1:3303/",
+        "discord_provider_kind": "spacebar",
+        "discord_test_only_allow_insecure_transport": True,
+    })
+
+    assert runtime["providerApiOrigin"] == "http://127.0.0.1:3301"
+    assert runtime["providerGatewayOrigin"] == "ws://127.0.0.1:3302"
+    assert runtime["providerCdnOrigin"] == "http://127.0.0.1:3303"
+
+
+@pytest.mark.parametrize(
+    ("name", "value"),
+    [
+        ("provider_api_origin", "http://example.com"),
+        ("provider_api_origin", "https://user:pass@example.com"),
+        ("provider_api_origin", "https://example.com/not-root"),
+        ("provider_gateway_origin", "ws://example.com"),
+        ("provider_gateway_origin", "https://example.com"),
+        ("provider_cdn_origin", "file:///tmp/provider"),
+    ],
+)
+def test_provider_endpoints_reject_unsafe_or_malformed_origins(name, value):
+    module, _ = _load_profile_module()
+    with pytest.raises(ValueError, match="provider"):
+        module.DiscordX()._runtime_config({
+            "discord_token": "bot-token-value",
+            "bot_channel": "1234567890",
+            "transport_protection": "none",
+            name: value,
+        })
+
+
+def test_server_ingress_and_egress_parameters_validate_without_entering_payload_config():
+    module, fake_base = _load_profile_module()
+    profile = module.DiscordX()
+    parameters = {parameter.kwargs["name"]: parameter.kwargs for parameter in profile.parameters}
+
+    assert parameters["listener_enabled"]["parameter_type"] == fake_base.ParameterType.Boolean
+    assert parameters["server_ingress_mode"]["default_value"] == "gateway"
+    assert parameters["server_poll_strategy"]["default_value"] == "adaptive"
+    assert parameters["server_egress_proxy_mode"]["default_value"] == "direct"
+
+    runtime = profile._runtime_config({
+        "discord_token": "bot-token-value",
+        "bot_channel": "1234567890",
+        "transport_protection": "none",
+        "server_ingress_mode": "polling",
+        "server_poll_strategy": "adaptive",
+        "server_poll_min_interval_seconds": "2",
+        "server_poll_base_interval_seconds": "15",
+        "server_poll_max_interval_seconds": "300",
+        "server_egress_proxy_mode": "socks5",
+        "server_egress_proxy_url": "socks5://proxy.internal:1080",
+        "server_egress_proxy_remote_dns": True,
+    })
+    assert "serverIngressMode" not in runtime
+    assert "serverEgressProxyPassword" not in runtime
+
+
+@pytest.mark.parametrize("parameters", [
+    {"server_egress_proxy_mode": "direct", "server_egress_proxy_url": "http://proxy.internal:8080"},
+    {"server_egress_proxy_mode": "socks5", "server_egress_proxy_url": "socks5://proxy.internal:1080", "server_egress_proxy_remote_dns": False},
+    {"server_poll_min_interval_seconds": "30", "server_poll_base_interval_seconds": "15"},
+    {"server_reconciliation_interval_seconds": "30"},
+])
+def test_server_operational_parameters_fail_closed(parameters):
+    module, _ = _load_profile_module()
+    with pytest.raises(ValueError):
+        module.DiscordX()._runtime_config({
+            "discord_token": "bot-token-value",
+            "bot_channel": "1234567890",
+            "transport_protection": "none",
+            **parameters,
+        })
 
 
 def test_encrypted_exchange_help_explains_modes_and_agent_requirement():
@@ -325,7 +408,7 @@ def test_runtime_config_rejects_invalid_fixed_transport_settings(updates, fragme
         module.DiscordX()._runtime_config(parameters)
 
 
-def test_config_check_replaces_existing_file_and_keeps_key_out_of_response(tmp_path):
+def test_config_check_preserves_existing_file_and_keeps_key_out_of_response(tmp_path):
     module, fake_base = _load_profile_module()
     profile = module.DiscordX()
     profile.server_folder_path = tmp_path
@@ -347,7 +430,21 @@ def test_config_check_replaces_existing_file_and_keeps_key_out_of_response(tmp_p
     )))
 
     assert response.Success is True
-    assert response.RestartInternalServer is True
+    assert response.RestartInternalServer is False
     assert key not in response.Message
     assert key not in response.Error
-    assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
+    assert config_path.read_text() == "{}"
+    assert stat.S_IMODE(config_path.stat().st_mode) == 0o644
+
+
+def test_optional_socks_channel_is_distinct_and_numeric():
+    module, _ = _load_profile_module()
+    parameters = {
+        "discord_token": "fixture-token", "bot_channel": "1234567890",
+        "socks_channel": "1234567891", "transport_protection": "none",
+        "transport_key_mode": "single",
+    }
+    assert module.DiscordX()._runtime_config(parameters)["socksChannelID"] == "1234567891"
+    for invalid in ("1234567890", "not-numeric"):
+        with pytest.raises(ValueError, match="socks_channel"):
+            module.DiscordX()._runtime_config({**parameters, "socks_channel": invalid})

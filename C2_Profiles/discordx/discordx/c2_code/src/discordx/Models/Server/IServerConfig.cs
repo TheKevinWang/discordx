@@ -10,6 +10,10 @@ namespace discordx.Models.Server
     {
         public string BotToken { get; set; }
         public string ChannelID { get; set; }
+        public string SocksChannelID { get; }
+        public string ProviderApiOrigin { get; }
+        public string ProviderGatewayOrigin { get; }
+        public string ProviderCdnOrigin { get; }
         public string WireProtocol { get; }
         public string TransportEnvelopeFormat { get; }
         public string TransportPresentation { get; }

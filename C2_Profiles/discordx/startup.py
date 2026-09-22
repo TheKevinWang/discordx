@@ -21,6 +21,31 @@ HEALTHCHECK_POLL_INTERVAL = 1.0
 CLOSE_WAIT_STATE = "08"
 MYTHIC_ROOT = Path("/Mythic")
 RUNTIME_CONFIG_PATH = Path("/Mythic/discordx/c2_code/config.json")
+SERVER_BINARY_PATH = Path("/Mythic/discordx/c2_code/discordx")
+SERVER_SOURCE_PATH = Path("/Mythic/discordx/c2_code")
+MIGRATED_LISTENER_ID = "00000000-0000-4000-8000-000000000001"
+MIGRATED_GENERATION_ID = "00000000-0000-4000-8000-000000000002"
+REQUIRED_RUNTIME_CONFIG_KEYS = (
+    "botToken",
+    "channelID",
+    "wireProtocol",
+    "transportEnvelopeFormat",
+    "transportPresentation",
+    "transportProtection",
+    "transportKeyMode",
+    "useBase64",
+)
+# Configurations created by the original profile contain only the token and
+# channel. Preserve their wire compatibility when upgrading them so an install
+# does not silently switch existing agents to the newer fixed transport.
+LEGACY_RUNTIME_CONFIG_DEFAULTS = {
+    "wireProtocol": "legacy",
+    "transportEnvelopeFormat": "json-v1",
+    "transportPresentation": "plain",
+    "transportProtection": "none",
+    "transportKeyMode": "single",
+    "useBase64": "true",
+}
 logger = logging.getLogger(__name__)
 ASYNC_SERVER_PATCH_FLAG = "_discord_async_server_handlers_patched"
 
@@ -98,10 +123,15 @@ def restore_bind_mount_ownership(root: Path = MYTHIC_ROOT) -> None:
 
 
 def build_server_binary() -> None:
+    if SERVER_BINARY_PATH.is_file() and os.access(SERVER_BINARY_PATH, os.X_OK):
+        return
     try:
         subprocess.run(
-            ["dotnet", "publish", "-c", "Release", "-o", "/Mythic/discordx/c2_code/"],
-            cwd="/Mythic/discordx/c2_code/src/discordx",
+            [
+                "go", "build", "-trimpath", "-ldflags=-s -w",
+                "-o", str(SERVER_BINARY_PATH), "./cmd/discordx-server",
+            ],
+            cwd=SERVER_SOURCE_PATH,
             check=True,
         )
     finally:
@@ -111,9 +141,10 @@ def build_server_binary() -> None:
 def runtime_config_is_valid(config: dict[str, object] | None) -> bool:
     if not isinstance(config, dict):
         return False
-    bot_token = str(config.get("botToken", "")).strip()
-    channel_id = str(config.get("channelID", "")).strip()
-    return bool(bot_token) and channel_id.isdigit()
+    if any(not isinstance(config.get(key), str) or not config[key].strip()
+           for key in REQUIRED_RUNTIME_CONFIG_KEYS):
+        return False
+    return config["channelID"].isdigit()
 
 
 def bootstrap_runtime_config_from_env(config_path: Path = RUNTIME_CONFIG_PATH) -> bool:
@@ -126,8 +157,10 @@ def bootstrap_runtime_config_from_env(config_path: Path = RUNTIME_CONFIG_PATH) -
     if runtime_config_is_valid(existing_config):
         return False
 
-    bot_token = os.environ.get("BOT_TOKEN", "").strip()
-    channel_id = os.environ.get("CHANNEL_ID", "").strip()
+    bot_token = str(existing_config.get("botToken", "")).strip() if isinstance(existing_config, dict) else ""
+    channel_id = str(existing_config.get("channelID", "")).strip() if isinstance(existing_config, dict) else ""
+    bot_token = bot_token or os.environ.get("BOT_TOKEN", "").strip()
+    channel_id = channel_id or os.environ.get("CHANNEL_ID", "").strip()
     if not bot_token or not channel_id.isdigit():
         logger.warning(
             "Discord runtime config is unavailable and env bootstrap is incomplete",
@@ -145,12 +178,100 @@ def bootstrap_runtime_config_from_env(config_path: Path = RUNTIME_CONFIG_PATH) -
             {
                 "botToken": bot_token,
                 "channelID": channel_id,
+                **LEGACY_RUNTIME_CONFIG_DEFAULTS,
             },
             indent=2,
         )
         + "\n"
     )
-    logger.info("Bootstrapped Discord runtime config from environment", extra={"config_path": str(config_path)})
+    os.chmod(config_path, 0o600)
+    logger.info(
+        "Bootstrapped complete legacy Discord runtime config",
+        extra={"config_path": str(config_path)},
+    )
+    return True
+
+
+def legacy_runtime_snapshot(config: dict[str, object]) -> dict[str, object]:
+    if not runtime_config_is_valid(config):
+        raise ValueError("legacy Discord runtime configuration is incomplete")
+    api_origin = str(config.get("providerApiOrigin", "https://discord.com")).rstrip("/")
+    gateway_origin = str(config.get("providerGatewayOrigin", "")).rstrip("/")
+    cdn_origin = str(config.get("providerCdnOrigin", "https://cdn.discordapp.com")).rstrip("/")
+    official = api_origin in {"https://discord.com", "https://discord.com/api"}
+    if official:
+        provider = {"kind": "discord", "api_version": 10}
+    else:
+        if not gateway_origin:
+            gateway_origin = (
+                ("wss://" if api_origin.startswith("https://") else "ws://")
+                + api_origin.split("://", 1)[-1]
+            )
+        provider = {
+            "kind": "spacebar",
+            "api_base_url": api_origin + ("" if api_origin.endswith("/api") else "/api"),
+            "gateway_base_url": gateway_origin,
+            "cdn_base_url": cdn_origin,
+            "api_version": 10,
+            "test_only_allow_insecure_transport": any(
+                value.startswith(("http://", "ws://"))
+                for value in (api_origin, gateway_origin, cdn_origin)
+            ),
+        }
+    generation = {
+        "id": MIGRATED_GENERATION_ID,
+        "state": "active",
+        "discord_token": str(config["botToken"]),
+        "task_channel_id": str(config["channelID"]),
+        "socks_channel_id": str(config.get("socksChannelID", "")),
+        "provider": provider,
+        "wire": {
+            "protocol": str(config["wireProtocol"]),
+            "envelope_format": str(config["transportEnvelopeFormat"]),
+            "presentation": str(config["transportPresentation"]),
+            "protection": str(config["transportProtection"]),
+            "key_mode": str(config["transportKeyMode"]),
+            "key": str(config.get("transportKey", "")),
+            "use_base64": str(config["useBase64"]).lower() == "true",
+        },
+    }
+    snapshot = {
+        "profile_name": PROFILE_NAME,
+        "revision": 1,
+        "listeners": [{
+            "id": MIGRATED_LISTENER_ID,
+            "name": "migrated-single-listener",
+            "operation_id": 1,
+            "enabled": True,
+            "active_generation_id": MIGRATED_GENERATION_ID,
+            "ingress": {"mode": "gateway", "poll_strategy": "adaptive"},
+            "egress": {"proxy_mode": "direct"},
+            "generations": [generation],
+        }],
+    }
+    if generation["wire"]["protocol"] == "legacy":
+        snapshot["migration_aliases"] = {
+            "bare_legacy": {
+                "listener_id": MIGRATED_LISTENER_ID,
+                "generation_id": MIGRATED_GENERATION_ID,
+            }
+        }
+    if provider.get("test_only_allow_insecure_transport"):
+        snapshot["test_mode"] = True
+    return snapshot
+
+
+def prepare_runtime_registry_env(config_path: Path = RUNTIME_CONFIG_PATH) -> bool:
+    if os.environ.get("DISCORDX_REGISTRY_JSON", "").strip():
+        return False
+    try:
+        config = json.loads(config_path.read_text(encoding="utf-8"))
+        snapshot = legacy_runtime_snapshot(config)
+    except (OSError, json.JSONDecodeError, ValueError):
+        logger.warning("Discordx is waiting for a complete in-memory listener registry")
+        return False
+    os.environ["DISCORDX_REGISTRY_JSON"] = json.dumps(snapshot, separators=(",", ":"))
+    logger.info("Prepared one migrated listener registry in process memory")
     return True
 
 
@@ -422,6 +543,7 @@ def start_service() -> None:
     mythic_service = get_mythic_service()
     patch_async_c2_server_handlers()
     bootstrap_runtime_config_from_env()
+    prepare_runtime_registry_env()
     loop = asyncio.get_event_loop()
     loop.run_until_complete(mythic_service.start_services())
     loop.run_until_complete(ensure_service_ready())

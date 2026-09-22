@@ -69,6 +69,8 @@ namespace discordx.Clients
             string id,
             ReadOnlyMemory<byte> data,
             AgentMessageFormat format,
+            string? ingressID,
+            DeliveryLane ingressLane,
             CancellationToken cancellationToken)
         {
             if (_connector is null)
@@ -76,7 +78,24 @@ namespace discordx.Clients
                 throw new InvalidOperationException("Mythic connection has not been established");
             }
 
-            await WriteAsync(CreateAgentMessage(id, data, format), cancellationToken);
+            var message = CreateAgentMessage(id, data, format);
+            message.IngressID = ingressID ?? String.Empty;
+            message.IngressLane = ingressLane;
+            await WriteAsync(message, cancellationToken);
+        }
+
+        public Task SendOutboundReceiptAsync(string outboundID, bool success,
+            CancellationToken cancellationToken)
+        {
+            if (String.IsNullOrWhiteSpace(outboundID))
+                throw new ArgumentException("Outbound delivery ID is required", nameof(outboundID));
+            return WriteAsync(new PushC2MessageFromAgent
+            {
+                C2ProfileName = C2ProfileName,
+                OutboundID = outboundID,
+                IsOutboundReceipt = true,
+                OutboundSuccess = success,
+            }, cancellationToken);
         }
 
         internal static PushC2MessageFromAgent CreateAgentMessage(

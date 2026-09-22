@@ -13,5 +13,6 @@ def test_discord_container_base_is_immutable():
         DISCORD_ROOT / "C2_Profiles" / "discordx" / "Dockerfile"
     ).read_text(encoding="utf-8")
 
-    assert dockerfile.splitlines()[0] == f"FROM {EXPECTED_BASE}"
+    assert dockerfile.splitlines()[0] == f"FROM {EXPECTED_BASE} AS runtime-base"
     assert ":latest" not in dockerfile
+    assert "golang:1.26.0-bookworm@sha256:2a0ba12e116687098780d3ce700f9ce3cb340783779646aafbabed748fa6677c" in dockerfile

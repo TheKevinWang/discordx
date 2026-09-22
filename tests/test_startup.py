@@ -1,6 +1,8 @@
 import asyncio
 import importlib
 import json
+import os
+import stat
 import sys
 from pathlib import Path
 from types import SimpleNamespace
@@ -67,6 +69,7 @@ def test_build_server_binary_restores_ownership_after_publish_failure(monkeypatc
 
     monkeypatch.setattr(startup.subprocess, "run", fake_run)
     monkeypatch.setattr(startup, "restore_bind_mount_ownership", fake_restore)
+    monkeypatch.setattr(startup.Path, "is_file", lambda self: False)
 
     with pytest.raises(RuntimeError, match="publish failed"):
         startup.build_server_binary()
@@ -74,7 +77,31 @@ def test_build_server_binary_restores_ownership_after_publish_failure(monkeypatc
     assert calls[-1] == ("restore", startup.MYTHIC_ROOT)
 
 
-def test_bootstrap_runtime_config_from_env_writes_blank_config(tmp_path, monkeypatch):
+def test_prepare_runtime_registry_env_migrates_without_writing_a_registry_file(tmp_path, monkeypatch):
+    startup = load_startup_module()
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({
+        "botToken": "token-canary",
+        "channelID": "123456789012345678",
+        "wireProtocol": "legacy",
+        "transportEnvelopeFormat": "json-v1",
+        "transportPresentation": "plain",
+        "transportProtection": "none",
+        "transportKeyMode": "single",
+        "useBase64": "true",
+    }))
+    monkeypatch.delenv("DISCORDX_REGISTRY_JSON", raising=False)
+
+    assert startup.prepare_runtime_registry_env(config_path) is True
+
+    snapshot = json.loads(os.environ["DISCORDX_REGISTRY_JSON"])
+    assert snapshot["profile_name"] == "discordx"
+    assert snapshot["listeners"][0]["generations"][0]["discord_token"] == "token-canary"
+    assert snapshot["migration_aliases"]["bare_legacy"]["generation_id"] == startup.MIGRATED_GENERATION_ID
+    assert list(tmp_path.iterdir()) == [config_path]
+
+
+def test_bootstrap_runtime_config_from_env_upgrades_blank_config_to_legacy_listener(tmp_path, monkeypatch):
     startup = load_startup_module()
     config_path = tmp_path / "config.json"
     config_path.write_text('{"botToken": "", "channelID": ""}\n')
@@ -87,22 +114,58 @@ def test_bootstrap_runtime_config_from_env_writes_blank_config(tmp_path, monkeyp
     assert json.loads(config_path.read_text()) == {
         "botToken": "env-bot-token",
         "channelID": "1234567890",
+        "wireProtocol": "legacy",
+        "transportEnvelopeFormat": "json-v1",
+        "transportPresentation": "plain",
+        "transportProtection": "none",
+        "transportKeyMode": "single",
+        "useBase64": "true",
     }
+    assert stat.S_IMODE(config_path.stat().st_mode) == 0o600
 
 
-def test_bootstrap_runtime_config_from_env_keeps_existing_valid_config(tmp_path, monkeypatch):
+def test_bootstrap_runtime_config_from_env_keeps_existing_complete_config(tmp_path, monkeypatch):
     startup = load_startup_module()
     config_path = tmp_path / "config.json"
-    config_path.write_text('{"botToken": "existing-token", "channelID": "1234567890"}\n')
+    existing_config = {
+        "botToken": "existing-token",
+        "channelID": "1234567890",
+        "wireProtocol": "fixed",
+        "transportEnvelopeFormat": "json-v1",
+        "transportPresentation": "plain",
+        "transportProtection": "none",
+        "transportKeyMode": "single",
+        "useBase64": "false",
+    }
+    config_path.write_text(json.dumps(existing_config))
     monkeypatch.setenv("BOT_TOKEN", "env-bot-token")
     monkeypatch.setenv("CHANNEL_ID", "9999999999")
 
     changed = startup.bootstrap_runtime_config_from_env(config_path)
 
     assert changed is False
+    assert json.loads(config_path.read_text()) == existing_config
+
+
+def test_bootstrap_runtime_config_from_env_upgrades_token_channel_only_config(tmp_path, monkeypatch):
+    startup = load_startup_module()
+    config_path = tmp_path / "config.json"
+    config_path.write_text('{"botToken": "existing-token", "channelID": "1234567890"}\n')
+    monkeypatch.delenv("BOT_TOKEN", raising=False)
+    monkeypatch.delenv("CHANNEL_ID", raising=False)
+
+    changed = startup.bootstrap_runtime_config_from_env(config_path)
+
+    assert changed is True
     assert json.loads(config_path.read_text()) == {
         "botToken": "existing-token",
         "channelID": "1234567890",
+        "wireProtocol": "legacy",
+        "transportEnvelopeFormat": "json-v1",
+        "transportPresentation": "plain",
+        "transportProtection": "none",
+        "transportKeyMode": "single",
+        "useBase64": "true",
     }
 
 
@@ -694,6 +757,7 @@ def test_start_service_skips_close_wait_monitor_and_starts_health_monitor(monkey
     monkeypatch.setattr(startup, "ensure_service_ready", fake_ensure_service_ready)
     monkeypatch.setattr(startup, "patch_async_c2_server_handlers", lambda: calls.append("patch_async_c2_server_handlers"))
     monkeypatch.setattr(startup, "bootstrap_runtime_config_from_env", lambda: calls.append("bootstrap_runtime_config_from_env"))
+    monkeypatch.setattr(startup, "prepare_runtime_registry_env", lambda: calls.append("prepare_runtime_registry_env"))
     monkeypatch.setattr(startup.asyncio, "get_event_loop", lambda: FakeLoop())
     monkeypatch.setattr(
         startup,
@@ -706,6 +770,7 @@ def test_start_service_skips_close_wait_monitor_and_starts_health_monitor(monkey
     assert calls == [
         "patch_async_c2_server_handlers",
         "bootstrap_runtime_config_from_env",
+        "prepare_runtime_registry_env",
         "start_services",
         "ensure_service_ready",
         ("create_task", "monitor_service_health"),

@@ -4,6 +4,7 @@ using Microsoft.VisualStudio.TestTools.UnitTesting;
 using PushC2Services;
 using System.Collections.Concurrent;
 using System.Runtime.CompilerServices;
+using System.Threading.Channels;
 
 namespace discordx.Tests.Clients
 {
@@ -29,6 +30,44 @@ namespace discordx.Tests.Clients
             Assert.AreEqual("tracking-1", secondConnection.LastTrackingId);
             Assert.AreEqual("payload-1", secondConnection.LastMessage);
             Assert.AreEqual(AgentMessageFormat.RawV1, secondConnection.LastFormat);
+        }
+
+        [TestMethod]
+        public async Task SendToMythic_WaitsForCorrelatedProcessingReceipt()
+        {
+            var connection = new ManualReceiptConnection();
+            await using var client = new MythicClient(new FakeConnectionFactory(connection));
+            var task = client.SendToMythic("route", new byte[] { 0, 128, 255 },
+                AgentMessageFormat.RawV1, "discord-message-1", DeliveryLane.Socks);
+            await WaitForConditionAsync(() => connection.SendAttempts == 1, TimeSpan.FromSeconds(2));
+            Assert.IsFalse(task.IsCompleted);
+            connection.Deliver("discord-message-1", true);
+            Assert.IsTrue(await task.WaitAsync(TimeSpan.FromSeconds(2)));
+            Assert.AreEqual("discord-message-1", connection.LastIngressID);
+            Assert.AreEqual(DeliveryLane.Socks, connection.LastLane);
+        }
+
+        [TestMethod]
+        public async Task SendToMythic_FailedReceiptLeavesMessageUnaccepted()
+        {
+            var connection = new ManualReceiptConnection();
+            await using var client = new MythicClient(new FakeConnectionFactory(connection));
+            var task = client.SendToMythic("route", new byte[] { 0 },
+                AgentMessageFormat.RawV1, "discord-message-2", DeliveryLane.Socks);
+            await WaitForConditionAsync(() => connection.SendAttempts == 1, TimeSpan.FromSeconds(2));
+            connection.Deliver("discord-message-2", false);
+            Assert.IsFalse(await task.WaitAsync(TimeSpan.FromSeconds(2)));
+        }
+
+        [TestMethod]
+        public async Task ReportOutboundDelivery_WritesASeparateCorrelatedReceipt()
+        {
+            var connection = new BlockingConnection();
+            await using var client = new MythicClient(new FakeConnectionFactory(connection));
+            Assert.IsTrue(await client.ReportOutboundDeliveryAsync("batch-id-1", false));
+            Assert.AreEqual("batch-id-1", connection.LastOutboundID);
+            Assert.IsFalse(connection.LastOutboundSuccess);
+            Assert.AreEqual(0, connection.SendAttempts);
         }
 
         [TestMethod]
@@ -143,6 +182,10 @@ namespace discordx.Tests.Clients
             public byte[]? LastMessageBytes { get; private set; }
             public string? LastMessage => LastMessageBytes is null ? null : System.Text.Encoding.UTF8.GetString(LastMessageBytes);
             public AgentMessageFormat? LastFormat { get; private set; }
+            public string? LastIngressID { get; private set; }
+            public DeliveryLane LastLane { get; private set; }
+            public string? LastOutboundID { get; private set; }
+            public bool LastOutboundSuccess { get; private set; }
 
             public Task ConnectAsync(CancellationToken cancellationToken)
             {
@@ -161,12 +204,15 @@ namespace discordx.Tests.Clients
                 await Task.CompletedTask;
             }
 
-            public Task SendToMythicAsync(string id, ReadOnlyMemory<byte> data, AgentMessageFormat format, CancellationToken cancellationToken)
+            public virtual Task SendToMythicAsync(string id, ReadOnlyMemory<byte> data, AgentMessageFormat format,
+                string? ingressID, DeliveryLane ingressLane, CancellationToken cancellationToken)
             {
                 SendAttempts++;
                 LastTrackingId = id;
                 LastMessageBytes = data.ToArray();
                 LastFormat = format;
+                LastIngressID = ingressID;
+                LastLane = ingressLane;
                 if (ThrowOnSend)
                 {
                     ThrowOnSend = false;
@@ -176,9 +222,39 @@ namespace discordx.Tests.Clients
                 return Task.CompletedTask;
             }
 
+            public virtual Task SendOutboundReceiptAsync(string outboundID, bool success,
+                CancellationToken cancellationToken)
+            {
+                LastOutboundID = outboundID;
+                LastOutboundSuccess = success;
+                return Task.CompletedTask;
+            }
+
             public virtual ValueTask DisposeAsync()
             {
                 return ValueTask.CompletedTask;
+            }
+        }
+
+        private sealed class ManualReceiptConnection : FakeConnection
+        {
+            private readonly Channel<PushC2MessageFromMythic> _incoming =
+                Channel.CreateUnbounded<PushC2MessageFromMythic>();
+
+            public void Deliver(string ingressID, bool success) =>
+                _incoming.Writer.TryWrite(new PushC2MessageFromMythic
+                {
+                    IsIngressReceipt = true,
+                    IngressID = ingressID,
+                    DeliveryLane = DeliveryLane.Socks,
+                    Success = success,
+                });
+
+            public override async IAsyncEnumerable<PushC2MessageFromMythic> ReadAllAsync(
+                [EnumeratorCancellation] CancellationToken cancellationToken)
+            {
+                await foreach (var message in _incoming.Reader.ReadAllAsync(cancellationToken))
+                    yield return message;
             }
         }
 

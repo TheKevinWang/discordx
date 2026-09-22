@@ -9,6 +9,13 @@ service PushC2 {
   rpc StartPushC2StreamingOneToMany (stream PushC2MessageFromAgent) returns (stream PushC2MessageFromMythic) {}
 }
 
+// Internal transport scheduling metadata. No lane value is serialized into
+// agent messages or the Discord transport envelope.
+enum DeliveryLane {
+  STANDARD = 0;
+  SOCKS = 1;
+}
+
 // agent sends along the base64 message like normal and c2 profile adds in c2 profile name
 // this is all normal c2 profiles pass along to mythic anyway
 // C2ProfileName is required
@@ -24,6 +31,11 @@ message PushC2MessageFromAgent {
   bytes  Base64Message      = 5;
   string TrackingID         = 6;
   bool   AgentDisconnected  = 7;
+  string IngressID          = 8;
+  DeliveryLane IngressLane  = 9;
+  string OutboundID         = 10;
+  bool IsOutboundReceipt    = 11;
+  bool OutboundSuccess      = 12;
 }
 
 // mythic sends along success/error information if any
@@ -33,4 +45,8 @@ bool   Success                = 1;
 string Error                  = 2;
 bytes  Message                = 3;
 string TrackingID             = 4;
+DeliveryLane DeliveryLane     = 5;
+string IngressID              = 6;
+bool IsIngressReceipt         = 7;
+string OutboundID             = 8;
 }

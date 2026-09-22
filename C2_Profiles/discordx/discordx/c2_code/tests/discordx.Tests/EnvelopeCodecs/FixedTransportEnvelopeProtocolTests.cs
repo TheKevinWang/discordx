@@ -99,6 +99,49 @@ namespace discordx.Tests.EnvelopeCodecs
         }
 
         [TestMethod]
+        public void BinaryV1_CarriesCanonicalNuwaNormalAndFileFixturesWithoutInnerTextConversion()
+        {
+            var innerFixtures = new[]
+            {
+                "090106616374696f6e060b6765745f7461736b696e67",
+                "090206616374696f6e060d706f73745f726573706f6e736509726573706f6e7365730801090108646f776e6c6f616409010a6368756e6b5f6461746107030080ff",
+            };
+            var format = new BinaryV1TransportEnvelopeFormat(AgentMessageFormat.RawV1);
+            foreach (var fixture in innerFixtures)
+            {
+                var body = Encoding.ASCII.GetBytes(Uuid).Concat(Convert.FromHexString(fixture)).ToArray();
+                var outer = format.Serialize(Request(body, AgentMessageFormat.RawV1), TransportDirection.AgentToServer);
+                Assert.AreEqual(37 + body.Length, outer.Length);
+                Assert.AreEqual(0x03, outer[0]);
+                CollectionAssert.AreEqual(body, outer[37..]);
+                CollectionAssert.AreEqual(body, format.Deserialize(outer, TransportDirection.AgentToServer).Message.ToArray());
+            }
+        }
+
+        [TestMethod]
+        public void BinaryV1_NormalFixture_MatchesFixedOuterAndProtectedDocuments()
+        {
+            var inner = Convert.FromHexString("090106616374696f6e060b6765745f7461736b696e67");
+            var body = Encoding.ASCII.GetBytes(Uuid).Concat(inner).ToArray();
+            var unprotected = FixedTransportEnvelopeProtocol.Create(
+                "binary-v1", "base64", "none", "single", Array.Empty<byte>(), false);
+            Assert.AreEqual(
+                "AzAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMDAwMDAwMDAwLTAwMDAtMDAwMC0wMDAwLTAwMDAwMDAwMDAwMAkBBmFjdGlvbgYLZ2V0X3Rhc2tpbmc=",
+                unprotected.Encode(Request(body, AgentMessageFormat.RawV1), TransportDirection.AgentToServer));
+
+            var protectedProtocol = FixedTransportEnvelopeProtocol.Create(
+                "binary-v1", "base64", "xor-obfuscation-v1", "single", MasterKey,
+                false, new FixedEntropy(Enumerable.Repeat((byte)0xA5, 8).ToArray()));
+            var protectedDocument = protectedProtocol.Encode(
+                Request(body, AgentMessageFormat.RawV1), TransportDirection.AgentToServer);
+            Assert.AreEqual(
+                "paWlpaWlpaWjk5KdnJ+emZiGmoWEh5uBgIOCkIyPjomVi4qVlJeWkZCTkp2cn56ZmJuahYSahoGAg5+NjI+OlIiLipWJl5aRkJOSnZyfnpmYoquz1dTC2N/dtLbb2srmzNrJzs3JwQ==",
+                protectedDocument);
+            CollectionAssert.AreEqual(body,
+                protectedProtocol.Decode(protectedDocument, TransportDirection.AgentToServer).Message.ToArray());
+        }
+
+        [TestMethod]
         public void BinaryV1_RejectsReservedFlagsShortFramesAndRouteMismatch()
         {
             var format = new BinaryV1TransportEnvelopeFormat(AgentMessageFormat.RawV1);

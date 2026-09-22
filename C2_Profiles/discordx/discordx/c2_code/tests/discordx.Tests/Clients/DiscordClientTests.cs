@@ -2,13 +2,148 @@
 using discordx.EnvelopeCodecs;
 using discordx.Models.Server;
 using Microsoft.VisualStudio.TestTools.UnitTesting;
+using Newtonsoft.Json.Linq;
 using PushC2Services;
+using System.Threading.Channels;
 
 namespace discordx.Tests.Clients
 {
     [TestClass]
     public class DiscordClientTests
     {
+        [TestMethod]
+        public void DiscordProviderEndpoints_DerivePinnedApiAndGatewayAddresses()
+        {
+            Assert.AreEqual(
+                "http://127.0.0.1:3301/api/v10/",
+                DiscordProviderEndpoints.ApiBaseUrl("http://127.0.0.1:3301"));
+            Assert.AreEqual(
+                "ws://127.0.0.1:3302",
+                DiscordProviderEndpoints.GatewayHost("ws://127.0.0.1:3302"));
+            Assert.IsNull(DiscordProviderEndpoints.GatewayHost(String.Empty));
+            Assert.AreEqual(
+                "ws://127.0.0.1:3302/?v=10&encoding=json",
+                DiscordProviderEndpoints.WithoutGatewayCompression(
+                    "ws://127.0.0.1:3302?v=10&encoding=json&compress=zlib-stream"));
+        }
+
+        [TestMethod]
+        public void DiscordProviderEndpoints_NormalizesSpacebarReadyReadState()
+        {
+            const string ready = "{\"op\":0,\"t\":\"READY\",\"d\":{\"read_state\":{},\"private_channels\":[]}}";
+
+            var normalized = JObject.Parse(
+                DiscordProviderEndpoints.NormalizeGatewayReady(ready));
+
+            Assert.IsInstanceOfType(normalized["d"]?["read_state"], typeof(JArray));
+            Assert.IsInstanceOfType(normalized["d"]?["private_channels"], typeof(JArray));
+        }
+
+        [TestMethod]
+        public void DiscordProviderEndpoints_DoesNotRewriteOtherGatewayEvents()
+        {
+            const string message = "{\"op\":0,\"t\":\"MESSAGE_CREATE\",\"d\":{\"read_state\":{}}}";
+
+            Assert.AreEqual(message, DiscordProviderEndpoints.NormalizeGatewayReady(message));
+        }
+
+        [TestMethod]
+        public void DiscordProviderEndpoints_RemovesNullSpacebarAttachmentFields()
+        {
+            const string response = "[{\"id\":\"1\",\"channel_id\":\"2\",\"author\":{},\"timestamp\":\"2026-09-21T00:00:00Z\",\"thread\":null,\"attachments\":[{\"id\":\"3\",\"height\":null,\"width\":null,\"flags\":null}]}]";
+
+            var normalized = JArray.Parse(
+                DiscordProviderEndpoints.NormalizeRestJson(response));
+            var message = (JObject?)normalized[0];
+            var attachment = (JObject?)message?["attachments"]?[0];
+
+            Assert.IsNotNull(message);
+            Assert.IsNotNull(attachment);
+            Assert.IsNull(message.Property("thread"));
+            Assert.IsNull(attachment.Property("height"));
+            Assert.IsNull(attachment.Property("width"));
+            Assert.IsNull(attachment.Property("flags"));
+        }
+
+        [TestMethod]
+        public void DiscordProviderEndpoints_PreservesUnrelatedNullDimensions()
+        {
+            const string response = "{\"height\":null,\"nested\":{\"width\":null}}";
+
+            Assert.AreEqual(response, DiscordProviderEndpoints.NormalizeRestJson(response));
+        }
+
+        [TestMethod]
+        public void DiscordProviderEndpoints_RemovesSpacebarMultipartAttachmentPlaceholders()
+        {
+            var source = new Dictionary<string, object>
+            {
+                ["payload_json"] = "{\"content\":\"\",\"attachments\":[{\"id\":\"0\",\"filename\":\"message.txt\"}]}",
+                ["files[0]"] = new byte[] { 0, 128, 255 },
+            };
+
+            var normalized = DiscordProviderEndpoints.NormalizeSpacebarMultipart(source);
+
+            Assert.IsNotNull(normalized["payload_json"]);
+            Assert.IsNull(JObject.Parse((string)normalized["payload_json"])["attachments"]);
+            CollectionAssert.AreEqual(
+                (byte[])source["files[0]"],
+                (byte[])normalized["files[0]"]);
+            Assert.IsNotNull(JObject.Parse((string)source["payload_json"])["attachments"]);
+        }
+
+        [TestMethod]
+        public void DiscordProviderEndpoints_RejectCrossOriginAttachments()
+        {
+            Assert.AreEqual(
+                "http://127.0.0.1:3303/attachments/message.txt",
+                DiscordProviderEndpoints.ValidateAttachmentUrl(
+                    "http://127.0.0.1:3303",
+                    "http://127.0.0.1:3303/attachments/message.txt"));
+            Assert.ThrowsException<DiscordEnvelopeException>(() =>
+                DiscordProviderEndpoints.ValidateAttachmentUrl(
+                    "http://127.0.0.1:3303",
+                    "http://127.0.0.1:3304/attachments/message.txt"));
+        }
+
+        [TestMethod]
+        public void DiscordProviderEndpoints_RejectPublicPlaintextOrigins()
+        {
+            Assert.ThrowsException<InvalidOperationException>(() =>
+                DiscordProviderEndpoints.NormalizeApiOrigin("http://example.com"));
+            Assert.ThrowsException<InvalidOperationException>(() =>
+                DiscordProviderEndpoints.NormalizeGatewayOrigin("ws://example.com"));
+        }
+
+        [TestMethod]
+        public async Task BlockedSocksUploadDoesNotHoldNormalOutboundWorker()
+        {
+            var socks = Channel.CreateBounded<int>(1);
+            var normal = Channel.CreateBounded<int>(1);
+            var holdSocks = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var socksStarted = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var normalDelivered = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+            var socksWorker = DiscordClient.RunOutboundLaneAsync(socks.Reader, async _ =>
+            {
+                socksStarted.TrySetResult(true);
+                await holdSocks.Task;
+            });
+            var normalWorker = DiscordClient.RunOutboundLaneAsync(normal.Reader, _ =>
+            {
+                normalDelivered.TrySetResult(true);
+                return Task.CompletedTask;
+            });
+            await socks.Writer.WriteAsync(1);
+            await socksStarted.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            await normal.Writer.WriteAsync(2);
+            await normalDelivered.Task.WaitAsync(TimeSpan.FromSeconds(2));
+            Assert.IsFalse(socksWorker.IsCompleted);
+            holdSocks.SetResult(true);
+            socks.Writer.Complete();
+            normal.Writer.Complete();
+            await Task.WhenAll(socksWorker, normalWorker);
+        }
+
         [TestMethod]
         public void ShouldProcessCatchUpMessage_UsesDurableProcessedMarker()
         {
@@ -225,6 +360,20 @@ namespace discordx.Tests.Clients
         }
 
         [TestMethod]
+        public void PreserveRawServerFrame_DoesNotPrefixAnAlreadyFramedMythicResponse()
+        {
+            const string route = "00000000-0000-0000-0000-000000000000";
+            var frame = System.Text.Encoding.ASCII.GetBytes(route)
+                .Concat(new byte[] { 0x09, 0x00, 0x80, 0xff }).ToArray();
+            CollectionAssert.AreEqual(frame, DiscordClient.PreserveRawServerFrame(route, frame));
+            Assert.AreEqual(route, DiscordClient.ReadRawServerFrameRoute(frame));
+            Assert.ThrowsException<InvalidOperationException>(() =>
+                DiscordClient.PreserveRawServerFrame(route, new byte[] { 0x09, 0x00 }));
+            Assert.ThrowsException<InvalidOperationException>(() =>
+                DiscordClient.ReadRawServerFrameRoute(new byte[] { 0x09, 0x00 }));
+        }
+
+        [TestMethod]
         public void LegacyWireProtocol_AcceptsAthenaShapeAndPreservesOriginalReplyWrapper()
         {
             const string payloadUuid = "00000000-0000-0000-0000-000000000000";
@@ -265,7 +414,11 @@ namespace discordx.Tests.Clients
                 return Task.CompletedTask;
             }
 
-            public Task<bool> SendToMythic(string id, ReadOnlyMemory<byte> data, AgentMessageFormat format)
+            public Task<bool> ReportOutboundDeliveryAsync(string outboundID, bool success) =>
+                Task.FromResult(true);
+
+            public Task<bool> SendToMythic(string id, ReadOnlyMemory<byte> data, AgentMessageFormat format,
+                string? ingressID = null, DeliveryLane ingressLane = DeliveryLane.Standard)
             {
                 LastSenderId = id;
                 LastMessageBytes = data.ToArray();
