@@ -1,6 +1,17 @@
 # discordx
 
-Discord c2 for Mythic C2, but with encryptable transport envelopes and pluggable encoding. 
+ [discord](https://github.com/MythicC2Profiles/discord) mythic c2 profile, but revamped:
+
+- encryption and encoding of the routing envelope (what gets sent to discord)
+  - no detectable routing data on the wire, such as "to_server", "client_id"
+- accepts many discord bot tokens and channelIDs not just one. 
+  - stress tested with thousands of discord bot tokens and channelIDs and tens of thousands of callbacks.
+- binary routing envelope instead of json, since the routing envelope is already encoded. 
+- durable message tracking with acknowledgements, deduplication, and cursor-based recovery to prevent lost or duplicate messages
+- golang instead of C#
+- use of updated discord clone [spacebar fork](https://github.com/TheKevinWang/spacebar-server) for local testing, in addition to live tests.
+- backwards compatible
+ 
 
 ## Fixed transport envelopes
 
